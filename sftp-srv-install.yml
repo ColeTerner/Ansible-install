@@ -1,0 +1,64 @@
+---
+- name: Install and set up SFTP-server
+  hosts: sftp
+  tasks:
+
+    - name: Install openssh-server
+      apt:
+        name: openssh-server
+        state: present
+      become: yes
+
+    - name: Create group sftp_users
+      group:
+        name: sftp_users
+        state: present
+      become: yes
+
+    - name: Create user
+      user:
+        name: "{{ hostvars[item].inventory_hostname_short }}"
+        shell: /bin/false
+        password: "{{ hostvars[item].password | password_hash('sha512') }}"
+        groups: sftp_users
+        append: yes
+      with_items: "{{ groups['allow'] }}"
+      become: yes
+
+    - name: Create folder /opt/download
+      file:
+      path: /opt/download
+      state: directory
+      mode: 0755
+      owner: root
+      group: root
+      become: yes
+
+    - name: Set sshd_config
+      lineinfile:
+      path: /etc/ssh/sshd_config
+      line: |
+        Match Group sftp_users
+        ChrootDirectory /opt/download
+        ForceCommand internal-sftp
+        PasswordAuthentication yes
+        X11Forwarding no
+        AllowTcpForwarding no
+        AllowAgentForwarding no
+      become: yes
+
+    - name: Create folder /opt/download/"{{ hostvars[item].inventory_hostname_short}}"
+      file:
+        path: /opt/download/"{{ hostvars[item].inventory_hostname_short }}"
+        state: directory
+        mode: 0755
+        owner: "{{ hostvars[item].inventory_hostname_short }}"
+        group: "{{ hostvars[item].inventory_hostname_short }}"
+      with_items: "{{ groups['allow'] }}"
+      become: yes
+
+    - name: Restart sshd
+      systemd:
+        name: sshd
+        state: restarted
+      become: yes

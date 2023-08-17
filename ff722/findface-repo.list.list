@@ -1,0 +1,1 @@
+deb [arch=amd64,all] file:///var/findface-repo ubuntu-18.04 3rdparty product

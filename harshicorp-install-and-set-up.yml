@@ -1,0 +1,245 @@
+---
+- hosts: all
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    vault_group:  vault
+    vault_user: vault
+    unseal_keys_dir_output: /var/lib/vault/data/unseal-keys
+    root_token_dir_output:  /var/lib/vault/data/root-token
+    
+  tasks:
+  - name: Creating vault user group
+    ansible.builtin.group:
+      name: "{{ vault_group }}"
+    become: true
+
+  - name: Creating vault user
+    ansible.builtin.user:
+      name: "{{ vault_user }}"
+      groups: "{{ vault_group }}"
+      system: yes
+      shell: "/sbin/nologin"
+      comment: "vault nologin User"
+      createhome: "no"
+      state: present
+    become: true
+
+  - name: sync files
+    synchronize:
+      src: vault_1.13.3_linux_amd64.zip
+      dest: /home/{{ansible_user}}/
+      partial: yes
+
+  - name: Copy SSL certificate and key
+    copy:
+      src: "{{ item }}"
+      dest: /home/{{ansible_user}}/
+      mode: '0600'
+    with_items:
+      - 'private.key'
+      - 'bundle.crt'
+
+  - name: Create a directory the vault  SSL certificate in the /opt/vault/tls/
+    file:
+      path: /opt/vault/tls/
+      state: directory
+      owner: "{{ vault_user }}"
+      group: "{{ vault_group }}"
+    become: yes  
+
+  - name: cp /home/{{ansible_user}}/private.key /opt/vault/tls/tls.key
+    shell: cp /home/{{ansible_user}}/private.key /opt/vault/tls/tls.key
+    become: yes    
+
+  - name: cp /home/{{ansible_user}}/bundle.crt /opt/vault/tls/tls.crt
+    shell: cp /home/{{ansible_user}}/bundle.crt /opt/vault/tls/tls.crt
+    become: yes    
+
+  - name: "Unzip vault archive"
+    unarchive:
+      src: /home/{{ansible_user}}/vault_1.13.3_linux_amd64.zip
+      dest: /usr/local/bin
+      copy: no
+      owner: "{{ vault_user }}"
+      group: "{{ vault_group }}"
+      mode: 0755
+    become: true
+
+  - name: "Set vault binary capabilities"
+    capabilities:
+      path: /usr/local/bin/vault
+      capability: cap_ipc_lock+ep
+      state: present
+    become: true
+
+  - name: Create a directory the HCL configuration file in the /etc/vault.d
+    file:
+      path: /etc/vault.d
+      state: directory
+    become: yes
+
+  - name: Create a directory the vault data in the ./vault/data
+    file:
+      path: /var/lib/vault/data/core
+      state: directory
+      owner: "{{ vault_user }}"
+      group: "{{ vault_group }}"
+    become: yes
+
+  - name: Add /etc/vault.d/vault.hcl
+    blockinfile:
+      path: /etc/vault.d/vault.hcl
+      state: present
+      create: true
+      block: |
+        disable_cache = true
+        disable_mlock = true
+        ui = true
+        api_addr = "http://127.0.0.1:8200"
+        max_lease_ttl         = "10h"
+        default_lease_ttl    = "10h"
+        cluster_name         = "vault"
+        raw_storage_endpoint     = true
+        disable_sealwrap     = true
+        disable_printable_check = true
+        storage "file" {
+          path = "/var/lib/vault/data"
+        }
+        #storage "consul" {
+        #  address = "127.0.0.1:8500"
+        #  path    = "vault"
+        #}
+
+        # HTTP listener
+        #listener "tcp" {
+        #  address = "0.0.0.0:8201"
+        #  tls_disable = 0
+        #}
+
+        # HTTPS listener
+        listener "tcp" {
+          address       = "0.0.0.0:8200"
+          tls_cert_file = "/opt/vault/tls/tls.crt"
+          tls_key_file  = "/opt/vault/tls/tls.key"
+        }
+
+        #listener "tcp" {
+        #  address = "127.0.0.1:8201"
+        #  tls_disable = 1
+        #}
+      marker: "# {mark} ANSIBLE MANAGED BLOCK"
+    become: yes
+
+  - name: Change file ownership, group and permissions /etc/vault.d/vault.hcl
+    ansible.builtin.file:
+      path: /etc/vault.d/vault.hcl
+      owner: vault
+      mode: '0777' #644
+    become: yes
+
+  - name: sudo nano /etc/systemd/system/vault.service
+    blockinfile:
+      path: /etc/systemd/system/vault.service
+      state: present
+      create: true
+      owner: "{{ vault_user }}"
+      group: "{{ vault_group }}"
+      block: |
+        [Unit]
+        Description=Tool for managing secrets
+        Documentation=https://vaultproject.io/docs/
+        After=network.target
+        ConditionFileNotEmpty=/etc/vault.d/vault.hcl
+
+        [Service]
+        User=vault
+        Group=vault
+        ExecStart=/usr/local/bin/vault server -config=/etc/vault.d/vault.hcl
+        ExecReload=/usr/local/bin/kill --signal HUP $MAINPID
+        CapabilityBoundingSet=CAP_SYSLOG CAP_IPC_LOCK
+        AmbientCapabilities=CAP_IPC_LOCK
+        SecureBits=keep-caps
+        NoNewPrivileges=yes
+        KillSignal=SIGINT
+
+        [Install]
+        WantedBy=multi-user.target
+      marker: "# {mark} ANSIBLE MANAGED BLOCK"
+    become: yes
+
+  - name: Set off VAULT_TOKEN env variable
+    shell: unset VAULT_TOKEN
+    become: yes
+    ignore_errors: True
+
+  - name: export VAULT_ADDR=https://vault.bit-tech.pro:8200
+    shell: export VAULT_ADDR=https://vault.bit-tech.pro:8200
+    become: yes
+    ignore_errors: True
+
+  - name: echo "VAULT_ADDR=https://vault.bit-tech.pro:8200" | sudo tee -a /etc/environment
+    shell: echo "VAULT_ADDR=https://vault.bit-tech.pro:8200" | sudo tee -a /etc/environment
+    become: yes
+
+  - name: vault service
+    service:
+      name: vault
+      state: started
+      enabled: yes
+    become: yes
+
+  - name: Unconditionally reboot the machine with all defaults
+    ansible.builtin.reboot:
+    become: yes
+
+#Create key of printing and folder of root key which is where we will keep our keys
+
+  - name: Create unseal directories
+    file:
+      path: "{{ unseal_keys_dir_output }}"
+      state: directory
+    delegate_to: localhost
+
+  - name: Create root key directories
+    file:
+      path: "{{ root_token_dir_output }}"
+      state: directory
+    delegate_to: localhost
+
+  - name: Initialise Vault operator
+    shell: vault operator init -key-shares=5 -key-threshold=3 -format json
+    environment:
+      VAULT_ADDR: "https://vault.bit-tech.pro:8200"
+    register: vault_init_results
+
+  - name: Parse output of vault init
+    set_fact:
+      vault_init_parsed: "{{ vault_init_results.stdout | from_json }}"
+
+  - name: Write unseal keys to files
+    copy:
+      dest: "{{ unseal_keys_dir_output }}/unseal_key_{{ item.0 }}"
+      content: "{{ item.1 }}"
+    with_indexed_items: "{{ vault_init_parsed.unseal_keys_hex }}"
+    delegate_to: localhost
+
+  - name: Write root token to file
+    copy:
+      content: "{{ vault_init_parsed.root_token }}"
+      dest: "{{root_token_dir_output}}/rootkey"
+    delegate_to: localhost
+
+#Print out vault
+  - name: Reading unseal key contents
+    command: cat {{item}}
+    register: unseal_keys
+    with_fileglob: "{{ unseal_keys_dir_output }}/*"
+    delegate_to: localhost
+    become: no
+
+  - name: Unseal vault with unseal keys
+    shell: |
+      vault operator unseal {{ item.stdout }}
+    environment:
+      VAULT_ADDR: "https://vault.bit-tech.pro:8200"
+    with_items: "{{unseal_keys.results}}"

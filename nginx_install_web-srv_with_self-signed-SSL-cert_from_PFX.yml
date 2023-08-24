@@ -222,3 +222,23 @@
         name: nginx
         state:  restarted
       become: yes
+
+- name: NGINX configuration
+  hosts:  all
+  gather_facts: false
+  become: yes
+  tags: ufw
+  tasks:
+
+    - name: ufw enabled
+      ufw:
+        state:  enabled
+    
+    - name: ufw allow http, https
+      ufw:
+        rule: allow
+        proto:  tcp
+        port: '{{item}}'
+      with_items:
+        - 80
+        - 443

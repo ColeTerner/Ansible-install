@@ -1,0 +1,224 @@
+---
+- name: NGINX installation
+  hosts:  all
+  gather_facts: false
+  tags: install
+  tasks:
+
+    - name: remove apache2
+      apt:
+        name: apache2
+        state:  absent
+      become: yes
+
+    - name: apt update
+      shell:  apt update
+      become: yes
+
+    - name: install NGINX
+      apt:
+        name: '{{item}}'
+        state:  latest
+      with_items:
+        - nginx
+        - openssl
+      become: yes
+
+    - name: nginx version
+      shell:  nginx -v
+      register: nginx_version
+    - debug:  var=nginx_version.stdout
+
+    - name: check if it works
+      shell:  curl -4 http://localhost | grep nginx
+      register: it_works
+    - debug:  var=it_works.stdout_lines
+
+
+- name: NGINX configuration
+  hosts:  all
+  vars:
+    domain: zayl.com
+    index_html: /mnt/distr/ansible/index.html
+  tags: set_up
+  tasks:
+
+    - name: create domain directory
+      file:
+        path: /var/www/{{domain}}/html
+        state:  directory
+        mode: '0755'
+        owner:  '{{ ansible_user }}'
+        group:  '{{ ansible_user }}'
+      become: yes
+
+    - name: copy file index.html -> /var/www/<your_domain>/
+      copy:
+        src:  '{{index_html}}'
+        dest: /var/www/{{domain}}/html/index.html
+      become: yes
+
+    - name: chmod index.html
+      shell:  chmod 777 /var/www/{{domain}}/html/index.html
+      become: yes
+    
+    - name: chown index.html
+      shell:  chown {{ansible_user}}:{{ansible_user}} /var/www/{{domain}}/html/index.html
+      become: yes
+
+
+    - name: create config for new site
+      file:
+        path: /etc/nginx/sites-available/{{domain}}
+        state: touch
+        mode: '0755'
+        owner:  '{{ ansible_user }}'
+        group:  '{{ ansible_user }}'
+      become: yes
+
+    - name: fill the config file
+      blockinfile:
+        path: /etc/nginx/sites-available/{{domain}}
+        block:  |
+          server {
+            listen 80;
+            listen [::]:80;
+
+            root /var/www/zayl.com/html;
+            index index.html index.htm index.nginx-debian.html;
+
+            server_name {{domain}} www.{{domain}};
+
+            location / {
+                    try_files $uri $uri/ =404;
+            }
+          }
+      become: yes
+
+    - name: create symbolic link to sites-enabled
+      file:
+        src:  /etc/nginx/sites-available/{{domain}}
+        dest: /etc/nginx/sites-enabled/{{domain}}
+        owner:  '{{ansible_user}}'
+        group:  '{{ansible_user}}'
+        state:  link
+      become: yes
+
+    - name: replace string hash in /etc/nginx/nginx.conf
+      replace:
+        path: /etc/nginx/nginx.conf
+        regexp: '# server_names_hash_bucket_size.*'
+        replace:  'server_names_hash_bucket_size 64;'
+      become: yes
+
+    - name: test nginx config for mistakes
+      shell:  sudo nginx -t
+      register: test
+      become: yes
+    - debug:  var=test.stdout_lines
+
+    - name: restart nginx
+      systemd:
+        name: nginx
+        state:  restarted
+      become: yes
+
+    - name: NGINX - make your site visible from the localhost(ip www.<domain> -> /etc/hosts)
+      blockinfile:
+        path: /etc/hosts
+        state:  present
+        insertafter:  "^127.0.0.1.*"
+        block:  "127.0.0.1  www.{{domain}}"
+      become: yes
+
+    - name: reboot
+      reboot:
+      become: yes
+
+
+- name: NGINX configuration
+  hosts:  all
+  vars:
+    domain: zayl.com
+    pfx_pass: detect-pwd
+    #key_location: /etc/ssl/private/{{domain}}.key
+    #cert_location:  /etc/ssl/certs/{{domain}}.crt
+    resolver: 127.0.0.1
+  tags: https
+  tasks:
+    
+    - name: SET location of your PFX cert
+      pause:
+        prompt: "Input the location of your PFX certificate ON LOCAL HOST(/mnt/distr/zayl.com.pfx):"
+      register: cert
+    - debug:  var=cert.user_input
+
+    - name: Copy .PFX cert to NGINX
+      copy:
+        src:  '{{cert.user_input}}'
+        dest: /home/{{ansible_user}}/{{domain}}.pfx
+      
+    - name: Change rights on /etc/ssl/private and /etc/ssl/certs
+      shell:  |
+        chmod -R '770' /etc/ssl/private
+        chmod -R '770' /etc/ssl/certs
+      become: yes
+
+    # - name: Divide and Copy .PFX cert into .CRT and .KEY files
+    #   shell:  |
+    #     openssl pkcs12 -in /home/{{ansible_user}}/{{domain}}.pfx -nokeys -out /etc/ssl/certs/{{domain}}.crt -passin pass:{{pfx_pass}}
+    #     openssl pkcs12 -in /home/{{ansible_user}}/{{domain}}.pfx -nocerts -out /etc/ssl/private/{{domain}}.key -passin pass:{{pfx_pass}}
+    #   become: yes
+
+    - name: Divide and Copy .PFX cert into .KEY files
+      shell:  openssl pkcs12 -in /home/{{ansible_user}}/{{domain}}.pfx -nocerts -out /etc/ssl/private/{{domain}}.key -nodes -passin pass:{{pfx_pass}}
+      become: yes
+      
+    - name: Divide and Copy .PFX cert into .CRT and .KEY files
+      shell:  openssl pkcs12 -in /home/{{ansible_user}}/{{domain}}.pfx -nokeys -out /etc/ssl/certs/{{domain}}.crt -passin pass:{{pfx_pass}}
+      become: yes
+
+    - name: Chmod 770 /etc/ssl/certs/{{domain}}.crt  /etc/ssl/private/{{domain}}.key
+      shell:  chmod 770 {{item}}
+      with_items:
+        - /etc/ssl/certs/{{domain}}.crt
+        - /etc/ssl/private/{{domain}}.key
+      become: yes
+
+
+    - name: Copy your .CRT file to CA (for ssl_trusted_certificate option)
+      copy:
+        src:  /etc/ssl/certs/{{domain}}.crt
+        dest: /etc/ssl/ca.crt
+        remote_src: yes
+      become: yes
+
+    - name: edit /etc/nging/sites-available/<domain>
+      blockinfile:
+        path: /etc/nginx/sites-available/{{domain}}
+        state:  present
+        insertafter:  "^server.*"
+        block:  |
+          listen                443 ssl;
+          ssl_certificate	      /etc/ssl/certs/{{domain}}.crt;     
+          ssl_certificate_key   /etc/ssl/private/{{domain}}.key;
+
+          ssl_session_timeout   10m;
+          keepalive_timeout     70;
+          ssl_protocols         TLSv1 TLSv1.1 TLSv1.2;
+          ssl_prefer_server_ciphers on;
+          ssl_trusted_certificate /etc/ssl/ca.crt;
+          resolver              {{resolver}};
+      become: yes
+
+    - name: nginx check config
+      shell:  nginx -t
+      register: test
+      become: yes
+    - debug: var=test.stdout_lines
+
+    - name: restart NGINX
+      systemd:
+        name: nginx
+        state:  restarted
+      become: yes

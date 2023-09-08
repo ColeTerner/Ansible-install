@@ -342,7 +342,7 @@
     - debug:  var=logs.stdout_lines
 
 
-- name: NGINX as HTTP-BALANCER
+- name: NGINX as BALANCER
   hosts:  all
   vars:
     upstream_group: zayl_app

@@ -1,0 +1,96 @@
+- name: NGINX as BALANCER
+  hosts:  all
+  vars:
+    upstream_group: zayl_app
+    redirect_to_ip:  '192.168.10.95'
+    nginx_balancer_port:  8101
+    log_file: /var/log/nginx/stream.log
+    max_connections_at_time:  512000
+  become: yes
+  tags: balancer
+  tasks:
+
+
+    - name: install NGINX
+      apt:
+        name: '{{item}}'
+        state:  latest
+      with_items:
+        - nginx
+        - openssl
+        - curl
+      
+    - name: copy old /etc/nginx/nginx.conf -> ~$USER/nginx.conf.bak
+      copy:
+        src:  /etc/nginx/nginx.conf
+        dest: /home/{{ansible_user}}/nginx.conf.balancer.bak
+        remote_src: yes
+
+    - name: SED worker_connections
+      replace:
+        path: /etc/nginx/nginx.conf
+        regexp: 'worker_connections.*'
+        replace:  'worker_connections {{max_connections_at_time}};'
+
+    - name: Check number of cpu cores
+      shell:  cat /proc/cpuinfo |grep -c processor
+      register: cores
+    - debug:  var=cores.stdout
+
+    - name: SED worker_processes
+      replace:
+        path: /etc/nginx/nginx.conf
+        regexp: '^worker_processes.*'
+        replace:  'worker_processes {{cores.stdout}};'
+
+    - name: Add block
+      blockinfile:
+        path: /etc/nginx/nginx.conf
+        state: present
+        insertafter: "^EOF"
+        block: |2
+            stream {
+            log_format upstreamlog '$time_local;$remote_addr;$upstream_addr;$msec';
+            access_log {{log_file}} upstreamlog;
+
+            server {
+            listen {{nginx_balancer_port}};
+            proxy_pass {{upstream_group}};
+            }
+
+            upstream {{upstream_group}} {
+            least_conn;
+            server {{redirect_to_ip}}:{{nginx_balancer_port}} weight=5;
+            }
+            }
+        marker: "# {mark} ANSIBLE MANAGED BLOCK"
+      become: yes
+      
+    - name: check nginx config
+      shell:  sudo nginx -t
+      ignore_errors:  yes
+
+    - name: restart nginx
+      systemd:
+        name: nginx
+        state:  restarted
+
+    - name: ufw enabled
+      ufw:
+        state:  enabled
+    
+    - name: ufw allow http, https
+      ufw:
+        rule: allow
+        proto:  tcp
+        port: '{{item}}'
+      with_items:
+        - 80
+        - 443
+        - 22
+        - '{{nginx_balancer_port}}'
+
+    - name: check log_file is created
+      shell:  cat {{log_file}}
+      register: logs
+    - debug:  var=logs.stdout_lines

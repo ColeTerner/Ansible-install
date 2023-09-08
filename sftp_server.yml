@@ -1,0 +1,68 @@
+---
+- name: Create your own SFTP server(share)
+  hosts:  all
+  vars:
+    sftp_user:  sftp
+    sftp_passwd:  detect-pwd
+    sftp_directory: /home/sftp
+  become: yes
+  tasks:
+    
+    - name: install ssh sshd
+      apt:
+        name: '{{item}}'
+        state:  present
+        update_cache: yes
+      with_items:
+        - ssh
+        - openssh-server
+      ignore_errors:  yes
+
+    - name: SED X11Forwarding
+      replace:
+        path: /etc/ssh/sshd_config
+        regexp: '^X11Forwarding.*'
+        replace:  'X11Forwarding no'
+
+    - name: Edit config /etc/ssh/sshd_config
+      blockinfile:
+        path: /etc/ssh/sshd_config
+        state:  present
+        insertafter:  '^EOF'
+        block:  |
+          Match group sftp_users
+          ChrootDirectory '{{sftp_directory}}'
+          AllowTcpForwarding no
+          ForceCommand internal-sftp
+          PasswordAuthentication yes
+        marker: "# {mark} ANSIBLE MANAGED BLOCK"
+      
+    - name: restart ssh
+      systemd:
+        name: ssh
+        state:  restarted
+
+    - name: create sftp group
+      group:
+        name: '{{sftp_user}}'
+        state:  present
+
+    - name: create user-group - sftp-sftp
+      user:
+        name: '{{sftp_user}}'
+        groups: '{{sftp_user}}'
+        append: yes
+        password: "{{ sftp_passwd | password_hash('sha512') }}"
+        create_home:  true
+        state:  present
+
+    - name: chmod /home/sftp
+      file:
+        path: '{{sftp_directory}}'
+        owner:  '{{sftp_user}}'
+        group:  '{{sftp_user}}'
+        state:  directory
+        mode: '0770'
+
+
+    

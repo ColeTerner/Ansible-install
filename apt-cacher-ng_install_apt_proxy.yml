@@ -1,0 +1,49 @@
+---
+- name: Install and set up apt-cacher-ng
+  hosts:  all
+  vars:
+    acng_port:  8888
+  become: yes
+  tasks:
+
+    - name: apt update
+      shell:  sudo apt update
+      ignore_errors:  yes
+
+    - name: apt
+      apt:
+        name: apt-cacher-ng
+        state:  latest
+      #become: yes
+
+    - name: configure
+      lineinfile:
+        path: /etc/apt-cacher-ng/acng.conf
+        insertafter:  '^EOF'
+        line: '{{item}}'
+      with_items:
+        - 'Port:{{acng_port}}'
+        - 'PassThroughPattern: .*'
+        - 'Bindaddress: 0.0.0.0'
+#        - 'ExThreshold: 4'
+
+    - name: restart service
+      systemd:
+        name: apt-cacher-ng
+        state:  restarted
+
+
+    - name: ufw add rule
+      ufw:
+        rule: allow
+        proto:  tcp
+        port: '{{acng_port}}'
+
+
+    - name: check
+      shell:  |
+        netstat -l | grep apt-cacher
+        netstat -l | grep '{{acng_port}}'
+      register: check
+    - debug:  var=check.stdout_lines
+
